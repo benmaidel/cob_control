@@ -80,11 +80,21 @@ private:
 
     tf::TransformListener tf_listener_;
 
-public:
-    CobTwistController()
-    {
-    }
+    bool disable_driver_on_idle_;
+    double disable_driver_on_idle_time_;
 
+    ros::ServiceClient halt_driver_client_;
+    ros::ServiceClient recover_driver_client_;
+
+    double rate_timer_watchdog_;
+    ros::Timer timer_twist_watchdog_;
+    ros::Time last_time_twist_received_;
+
+    bool halt_active_;
+    boost::mutex halt_mutex_;
+
+public:
+    CobTwistController();
     ~CobTwistController()
     {
         this->jntToCartSolver_vel_.reset();
@@ -110,6 +120,9 @@ public:
 
     boost::recursive_mutex reconfig_mutex_;
     boost::shared_ptr< dynamic_reconfigure::Server<cob_twist_controller::TwistControllerConfig> > reconfigure_server_;
+
+private:
+    void twistWatchdogCallback(const ros::TimerEvent& event);
 };
 
 #endif  // COB_TWIST_CONTROLLER_COB_TWIST_CONTROLLER_H

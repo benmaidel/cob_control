@@ -27,8 +27,18 @@
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <cob_srvs/SetString.h>
+#include <std_srvs/Trigger.h>
 
 #include <Eigen/Dense>
+
+CobTwistController::CobTwistController() :
+    disable_driver_on_idle_(true),
+    disable_driver_on_idle_time_(10.0),
+    rate_timer_watchdog_(0.2),
+    last_time_twist_received_(ros::Time::now()),
+    halt_active_(false)
+{
+}
 
 bool CobTwistController::initialize()
 {
@@ -190,6 +200,21 @@ bool CobTwistController::initialize()
 
     /// publisher for visualizing current twist direction
     twist_direction_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("twist_direction", 1);
+
+    nh_twist.param<bool>("disable_driver_on_idle_", disable_driver_on_idle_, disable_driver_on_idle_);
+    nh_twist.param<double>("disable_driver_on_idle_time_", disable_driver_on_idle_time_, disable_driver_on_idle_time_);
+
+    halt_driver_client_ = nh_.serviceClient<std_srvs::Trigger>("base/driver/halt");
+    halt_driver_client_.waitForExistence(ros::Duration(5.0));
+
+    recover_driver_client_ = nh_.serviceClient<std_srvs::Trigger>("base/driver/recover");
+    recover_driver_client_.waitForExistence(ros::Duration(5.0));
+
+    if(disable_driver_on_idle_)
+    {
+        nh_twist.param<double>("rate_timer_watchdog", rate_timer_watchdog_, rate_timer_watchdog_);
+        timer_twist_watchdog_ = nh_.createTimer(ros::Duration(0.1), &CobTwistController::twistWatchdogCallback, this);
+    }
 
     ROS_INFO_STREAM(nh_.getNamespace() << "/twist_controller...initialized!");
     return true;
@@ -431,6 +456,14 @@ void CobTwistController::twistStampedCallback(const geometry_msgs::TwistStamped:
 /// Orientation of twist_msg is with respect to chain_base coordinate system
 void CobTwistController::twistCallback(const geometry_msgs::Twist::ConstPtr& msg)
 {
+    last_time_twist_received_ = ros::Time::now();
+    if(halt_active_)
+    {
+        std_srvs::Trigger t;
+        recover_driver_client_.call(t);
+        boost::mutex::scoped_lock lock(halt_mutex_);
+        halt_active_=false;
+    }
     KDL::Twist twist;
     tf::twistMsgToKDL(*msg, twist);
     solveTwist(twist);
@@ -630,4 +663,18 @@ void CobTwistController::odometryCallback(const nav_msgs::Odometry::ConstPtr& ms
     twist_odometry_transformed_cb = cb_frame_bl * (twist_odometry_bl + tangential_twist_bl);
 
     twist_odometry_cb_ = twist_odometry_transformed_cb;
+}
+
+void CobTwistController::twistWatchdogCallback(const ros::TimerEvent& event)
+{
+    if(!halt_active_)
+    {
+        if((ros::Time::now() - last_time_twist_received_).toSec() >= disable_driver_on_idle_time_)
+        {
+            std_srvs::Trigger t;
+            halt_driver_client_.call(t);
+            boost::mutex::scoped_lock lock(halt_mutex_);
+            halt_active_ = true;
+        }
+    }
 }
